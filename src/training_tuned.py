@@ -1,0 +1,95 @@
+import numpy as np
+from time import time
+from torch.autograd import Variable
+from src.datasets import triplet_dataloader
+
+def prep_triplets(triplets, cuda):
+    """
+    Takes a batch of triplets and converts them into Pytorch variables 
+    and puts them on GPU if available.
+    """
+    a, n, d = (Variable(triplets['anchor']), Variable(triplets['neighbor']), Variable(triplets['distant']))
+    if cuda:
+    	a, n, d = (a.cuda(), n.cuda(), d.cuda())
+    return (a, n, d)
+
+def train_triplet_epoch(model, cuda, dataloader, optimizer, epoch, margin=1,
+    l2=0, print_every=100, t0=None, hyper_tuning=False):
+    """
+    Trains a model for one epoch using the provided dataloader.
+    """
+    model.train()
+    if t0 is None:
+        t0 = time.time()
+    sum_loss, sum_l_n, sum_l_d, sum_l_nd = (0, 0, 0, 0)
+    n_train, n_batches = len(dataloader.dataset), len(dataloader)
+    print_sum_loss = 0
+    total_small = 0
+    small_denom = 0
+    counter = 0
+    for idx, triplets in enumerate(dataloader):   
+        p, n, d = prep_triplets(triplets, cuda)
+        optimizer.zero_grad()
+        big_loss, small_loss, l_n, l_d, l_nd = model.loss(p, n, d, idx,margin=margin,l2=l2)
+        big_loss.backward()
+        optimizer.step()
+        sum_loss += big_loss.item()
+        if model.strat2:#only backprop on strat2 if using it and idx is in dict
+            total_small += small_loss
+            small_denom += 1
+        sum_l_n += l_n.item()
+        sum_l_d += l_d.item()
+        sum_l_nd += l_nd.item()
+        if (idx + 1) * dataloader.batch_size % print_every == 0:
+            print_avg_loss = (sum_loss - print_sum_loss) / (
+                print_every / dataloader.batch_size)
+            print('Epoch {}: [{}/{} ({:0.0f}%)], Avg loss: {:0.4f}'.format(
+                epoch, (idx + 1) * dataloader.batch_size, n_train,
+                100 * (idx + 1) / n_batches, print_avg_loss))
+            print_sum_loss = sum_loss
+        counter += 1
+        if hyper_tuning and counter == 100:
+            print('breaking')
+            break
+    counter = 0
+    if hyper_tuning:
+        for idx, triplets in enumerate(dataloader, start=100001): 
+            p, n, d = prep_triplets(triplets, cuda)
+            optimizer.zero_grad()
+            big_loss, small_loss, l_n, l_d, l_nd = model.loss(p, n, d, idx,margin=margin,l2=l2)
+            #print(big_loss)
+            big_loss.backward()
+            #if model.strat2:#only backprop on strat2 if using it and idx is in dict
+                #print("strat 2 works")
+                #small_loss.backward()
+            optimizer.step()
+            sum_loss += big_loss.item()
+            if model.strat2:#only backprop on strat2 if using it and idx is in dict
+                total_small += small_loss
+                small_denom += 1
+                #small_loss += small_loss.item()
+            sum_l_n += l_n.item()
+            sum_l_d += l_d.item()
+            sum_l_nd += l_nd.item()
+            if (idx + 1) * dataloader.batch_size % print_every == 0:
+                print_avg_loss = (sum_loss - print_sum_loss) / (
+                    print_every / dataloader.batch_size)
+                print('Epoch {}: [{}/{} ({:0.0f}%)], Avg loss: {:0.4f}'.format(
+                    epoch, (idx + 1) * dataloader.batch_size, n_train,
+                    100 * (idx + 1) / n_batches, print_avg_loss))
+                print_sum_loss = sum_loss
+            counter += 1
+            if counter == 10:
+                break
+    avg_loss = sum_loss / n_batches
+#     if model.strat2:
+#         avg_small = total_small/small_denom
+    avg_l_n = sum_l_n / n_batches
+    avg_l_d = sum_l_d / n_batches
+    avg_l_nd = sum_l_nd / n_batches
+    print('Finished epoch {}: {:0.3f}s'.format(epoch, time()-t0))
+    print('  Average loss: {:0.4f}'.format(avg_loss))
+    print('  Average l_n: {:0.4f}'.format(avg_l_n))
+    print('  Average l_d: {:0.4f}'.format(avg_l_d))
+    print('  Average l_nd: {:0.4f}\n'.format(avg_l_nd))
+    return (avg_loss, avg_l_n, avg_l_d, avg_l_nd)
